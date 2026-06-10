@@ -98,6 +98,15 @@ def health():
     return {"status": "ok", "service": "starbot-ai-service"}
 
 
+@app.get("/")
+def root():
+    return {
+        "message": "Starbot AI Service is running",
+        "health": "/health",
+        "docs": "/docs",
+    }
+
+
 @app.post("/embed", response_model=EmbedResponse)
 def embed(req: EmbedRequest):
     assert embedding_service is not None
