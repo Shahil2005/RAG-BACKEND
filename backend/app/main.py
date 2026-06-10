@@ -26,5 +26,15 @@ app.add_middleware(  # outermost (added last)
     allow_headers=["*"],
 )
 
+
+@app.get("/")
+async def root() -> dict[str, str]:
+    return {
+        "message": "RAG Backend API is running",
+        "docs": "/api/docs",
+        "health": "/api/v1/health",
+    }
+
+
 # All routes are mounted under /api/v1 (see app/router/__init__.py).
 app.include_router(api_router)
