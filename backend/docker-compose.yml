@@ -1,25 +1,137 @@
+version: "3.9"
+
 services:
   postgres:
-    image: postgres:latest
-    container_name: db
-    restart: always
+    image: postgres:15-alpine
     environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: myapp
-    ports:
-      - 5433:5432
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: starbot
     volumes:
-      - ./data/db/postgres/data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres -d starbot" ]
+      interval: 10s
+      retries: 10
+    restart: unless-stopped
 
   redis:
-    image: "redis:alpine"
-    container_name: redis
-    command: redis-server --requirepass "hOW32#$@41u31Aq4"
+    image: redis:7-alpine
     ports:
       - "6379:6379"
-    volumes:
-      - ./data/db/redis/redis-data:/var/lib/redis
-      - ./data/db/redis/redis.conf:/usr/local/etc/redis/redis.conf
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      retries: 5
+    restart: unless-stopped
+
+  ai-service:
+    image: ragoutlook-ai-service:test
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.ai-service
+    ports:
+      - "8001:8001"
     environment:
-      - REDIS_REPLICATION_MODE=master
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    healthcheck:
+      test: [ "CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/health')\" || exit 1" ]
+      interval: 10s
+      retries: 6
+    restart: unless-stopped
+
+  api:
+    image: ragoutlook-api:test
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.api
+    ports:
+      - "3001:3001"
+    env_file:
+      - ../../.env
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: postgres
+      DATABASE_PASSWORD: postgres
+      DATABASE_NAME: starbot
+      REDIS_URL: redis://redis:6379
+      AI_SERVICE_URL: http://ai-service:8001
+    depends_on:
+      redis:
+        condition: service_started
+      ai-service:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:3001/api/v1/health')\" || exit 1" ]
+      interval: 10s
+      retries: 6
+    restart: unless-stopped
+
+  worker:
+    image: ragoutlook-api:test
+    command: [ "celery", "-A", "app.core.celery:celery_app", "worker", "--beat", "--loglevel=info", "--pool=solo" ]
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.worker
+    env_file:
+      - ../../.env
+    environment:
+      DATABASE_HOST: postgres
+      REDIS_URL: redis://redis:6379
+      AI_SERVICE_URL: http://ai-service:8001
+    depends_on:
+      redis:
+        condition: service_started
+      api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    image: ragoutlook-web:test
+    build:
+      # Context = RAG-FRONTEND/frontend/ (separate repo)
+      # Dockerfile.web lives there alongside the source code
+      context: ../../../../RAG-FRONTEND/frontend
+      dockerfile: Dockerfile.web
+      args:
+        NEXT_PUBLIC_API_URL: http://api:3001
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://api:3001
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/ || exit 1" ]
+      interval: 10s
+      retries: 6
+    restart: unless-stopped
+
+  migrate:
+    image: ragoutlook-api:test
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.api
+    env_file:
+      - ../../.env
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: postgres
+      DATABASE_PASSWORD: postgres
+      DATABASE_NAME: starbot
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: [ "/bin/sh", "-c" ]
+    command: [ "alembic upgrade head || echo 'migrations failed' ; exit 0" ]
+    restart: "no"
+
+volumes:
+  postgres_data:
