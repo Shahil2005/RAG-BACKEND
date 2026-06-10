@@ -2,10 +2,11 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY backend/ai-service/requirements.txt ./requirements.txt
+# context = RAG-BACKEND/backend/ → ai-service/ is a direct subfolder
+COPY ai-service/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY backend/ai-service/app ./app
+COPY ai-service/app ./app
 
 ENV PYTHONPATH=/app
 EXPOSE 8001

@@ -94,14 +94,14 @@ services:
   web:
     image: ragoutlook-web:test
     build:
-      context: ../..
-      dockerfile: infrastructure/docker/Dockerfile.web
+      # Context = RAG-FRONTEND/frontend/ (separate repo)
+      # Dockerfile.web lives there alongside the source code
+      context: ../../../../RAG-FRONTEND/frontend
+      dockerfile: Dockerfile.web
       args:
         NEXT_PUBLIC_API_URL: http://api:3001
     ports:
       - "3000:3000"
-    env_file:
-      - ../../.env
     environment:
       NEXT_PUBLIC_API_URL: http://api:3001
     depends_on:
