@@ -17,7 +17,7 @@
 ssl/
 
 # ------------------------------------------------------------
-# Python
+# Python  (caches & build artifacts only — NOT source folders)
 # ------------------------------------------------------------
 __pycache__/
 *.py[cod]
@@ -26,25 +26,21 @@ __pycache__/
 *.egg
 *.egg-info/
 .eggs/
-dist/
-build/
-develop-eggs/
-downloads/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
+# Build output — anchored to repo root so they can't match a source
+# folder named "build"/"dist" deeper in the tree.
+/dist/
+/build/
+/sdist/
+/wheels/
+*.whl
 .installed.cfg
 MANIFEST
 
-# Virtual environments
+# Virtual environments  (root-anchored so a source module named "env" survives)
 .venv/
 venv/
-env/
-ENV/
+/env/
+/ENV/
 env.bak/
 venv.bak/
 .python-version
@@ -102,10 +98,9 @@ pip-delete-this-directory.txt
 node_modules/
 .next/
 .nuxt/
-out/
+/out/
 .turbo/
-dist/
-build/
+# (root /dist and /build already covered in the Python section above)
 
 # TypeScript
 *.tsbuildinfo
