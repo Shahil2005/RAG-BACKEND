@@ -1,0 +1,168 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+@page { size: A4; margin: 14mm 15mm; }
+* { box-sizing: border-box; }
+body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 10.2px; line-height: 1.42; color: #1a1a1a; }
+h1 { font-size: 19px; color: #0b3d91; border-bottom: 2px solid #0b3d91; padding-bottom: 5px; margin: 0 0 8px; }
+h2 { font-size: 13px; color: #0b3d91; margin: 13px 0 4px; border-bottom: 1px solid #d0d7e2; padding-bottom: 2px; }
+h3 { font-size: 11px; margin: 8px 0 3px; }
+p { margin: 4px 0; }
+ul, ol { margin: 4px 0; padding-left: 18px; }
+li { margin: 1.5px 0; }
+table { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 9.3px; }
+th, td { border: 1px solid #c5cdda; padding: 3px 6px; text-align: left; vertical-align: top; }
+th { background: #eef2f8; color: #0b3d91; font-weight: 600; }
+code { background: #f3f4f6; padding: 1px 4px; border-radius: 3px; font-family: Consolas, monospace; font-size: 9px; color: #b91c1c; }
+pre { background: #f6f8fa; border: 1px solid #e1e4e8; border-radius: 5px; padding: 8px 10px; overflow-x: auto; line-height: 1.3; }
+pre code { background: none; color: #24292e; padding: 0; font-size: 8.6px; }
+hr { border: none; border-top: 1px solid #d0d7e2; margin: 9px 0; }
+strong { color: #111; }
+h2 { page-break-after: avoid; }
+table, pre { page-break-inside: avoid; }
+</style></head><body><h1>Starbot — Developer Documentation</h1>
+<p><strong>Project:</strong> Starbot (RAG-OUTLOOK) — an enterprise AI assistant for AppXcess Technologies that lets employees query their Microsoft 365 data (Outlook, SharePoint, OneDrive) in plain English, auto-classifies their inbox, and generates documents — all grounded in real company data with citations.</p>
+<p><strong>Document scope:</strong> Current implementation, developer's view. | <strong>Date:</strong> 2026-06-09</p>
+<hr />
+<h2>1. Architecture Overview</h2>
+<p>The system is a multi-service application split into four runtime components:</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Tech</th>
+<th>Port</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Backend API</strong></td>
+<td>Python, FastAPI, SQLAlchemy (async)</td>
+<td>3001</td>
+<td>Auth, search/RAG, mail, documents, ingestion, chat — all REST under <code>/api/v1</code></td>
+</tr>
+<tr>
+<td><strong>AI Service</strong></td>
+<td>Python, FastAPI, Sentence-Transformers</td>
+<td>8001</td>
+<td>Stateless microservice: embeddings, reranking, intent classification</td>
+</tr>
+<tr>
+<td><strong>Worker</strong></td>
+<td>Celery + Celery Beat</td>
+<td>—</td>
+<td>Scheduled background ingestion (every 6h)</td>
+</tr>
+<tr>
+<td><strong>Frontend</strong></td>
+<td>Next.js 15, React 19, Tailwind, Radix UI</td>
+<td>3000</td>
+<td>Web UI (App Router), proxies <code>/api/v1/*</code> to backend</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Backing services:</strong> PostgreSQL (metadata, permissions, audit), Pinecone (vector store, 384-dim), Redis (cache + OAuth state, optional with in-memory fallback).</p>
+<p><strong>External APIs:</strong> Microsoft Graph (mail/files/sites), OpenAI (<code>gpt-5.4-mini</code>), Tavily (business web search, optional).</p>
+<pre><code>Frontend (Next.js) ──► Backend API (FastAPI) ──► PostgreSQL  (metadata, auth, audit)
+                            │      │      └──────► Pinecone    (vectors, per-org namespace)
+                            │      └─────────────► AI Service  (embed / rerank / classify)
+                            └────────────────────► Microsoft Graph + OpenAI
+Worker (Celery Beat, 6h) ──► Backend ingestion services
+</code></pre>
+<p><strong>Repo layout:</strong> <code>backend/app</code> (api: <code>router/</code>, <code>services/</code>, <code>models/</code>, <code>schema/</code>, <code>prompts/</code>, <code>core/</code>, <code>job/</code>), <code>backend/ai-service</code>, <code>frontend/</code>, <code>infrastructure/</code> (postgres migrations, docker, k8s, terraform).</p>
+<hr />
+<h2>2. Authentication</h2>
+<p>Microsoft Entra OAuth 2.0 with JWT session cookies.</p>
+<ol>
+<li><code>GET /auth/microsoft/authorize-url</code> → generates a <code>state</code> (stored in Redis, 10-min TTL) and returns the Entra consent URL.</li>
+<li>User consents → <code>GET /auth/microsoft/callback</code> validates <code>state</code>, exchanges the code for tokens.</li>
+<li>Profile fetched from Graph <code>/me</code>; user upserted; <strong>OAuth tokens encrypted with AES-256-GCM</strong> and stored in <code>oauth_tokens</code>.</li>
+<li>A JWT (HS256) is issued as an httpOnly cookie (<code>starbot_session</code>); a row is stored in <code>sessions</code>.</li>
+<li>Protected routes use the <code>CurrentUserDep</code> dependency to validate the JWT and load the user context.</li>
+</ol>
+<p><strong>Scopes:</strong> <code>User.Read, Mail.Read, Mail.ReadWrite, Files.Read.All, Sites.Read.All, offline_access</code>.
+<strong>Roles:</strong> <code>owner / admin / member / viewer</code> (in <code>organization_members</code>). All data is scoped by <code>organization_id</code> + <code>user_id</code> at the application layer.</p>
+<hr />
+<h2>3. Data Ingestion Pipeline</h2>
+<p>Pulls M365 content into the searchable index. (<code>services/ingestion_service.py</code>, <code>job/tasks/ingestion.py</code>)</p>
+<ul>
+<li><strong>Trigger:</strong> Celery Beat <code>scheduler.tick</code> runs every 6h (<code>INGESTION_SYNC_INTERVAL_MS</code>), enqueuing one sync task per user per source. Manual triggers: <code>POST /ingestion/outlook/sync</code>, <code>POST /ingestion/documents/sync</code>.</li>
+<li><strong>Outlook:</strong> fetches ~100 recent emails via Graph → stores metadata in <code>email_metadata</code> → chunks <code>subject + body</code>.</li>
+<li><strong>SharePoint/OneDrive:</strong> crawls files (OneDrive uses <strong>delta-sync cursors</strong>; SharePoint full crawl) → stores metadata in <code>file_metadata</code> → extracts text from <code>.docx/.pdf/.xlsx/.pptx</code> (python-docx, pypdf, openpyxl); metadata-only fallback if extraction fails.</li>
+<li><strong>Common path:</strong> <code>chunk_text(size=512, overlap=64)</code> → embed via AI service → <strong>upsert to Pinecone</strong> in batches of 100, namespace = <code>organization_id</code>, vector id = <code>{source}:{contentId}:{chunkId}</code>, with <code>source</code> metadata.</li>
+</ul>
+<hr />
+<h2>4. Search &amp; RAG Flow</h2>
+<p>How a question becomes a cited answer. (<code>services/rag_service.py</code>, <code>query_service.py</code>, <code>hybrid_retrieval</code>)</p>
+<ol>
+<li><strong>Topic guard</strong> — off-topic queries (weather, sports, etc.) are refused before any LLM call.</li>
+<li><strong>Intent routing</strong> — AI service <code>/agent/classify</code> returns intent + suggested sources. Recency phrasing ("latest emails") narrows to Outlook; ("recent files") to SharePoint/OneDrive.</li>
+<li><strong>Hybrid retrieval (parallel):</strong></li>
+<li><em>Keyword</em> — SQL <code>ILIKE</code> on email subjects / file names (limit 5).</li>
+<li><em>Vector</em> — embed query (384-dim) → Pinecone <code>query(top_k=20)</code> filtered by <code>source</code>, <code>organizationId</code>, and optional <code>workspaceId</code>/<code>projectId</code>.</li>
+<li><strong>Permission filter</strong> — drops chunks the user doesn't own.</li>
+<li><strong>Fusion + rerank</strong> — Reciprocal Rank Fusion (K=60) merges keyword+vector, then AI service <code>/rerank</code> returns top 5.</li>
+<li><strong>Live fallback</strong> — if vectors are empty, fetch fresh emails/files directly from Graph.</li>
+<li><strong>Synthesis</strong> — OpenAI <code>gpt-5.4-mini</code> (temp 0.2) with <code>RAG_SYSTEM_PROMPT</code> + ranked context blocks → answer <strong>with citations</strong> (source, title, snippet, URL). Streamed to client via SSE; results cached in Redis (120s TTL, skipped for live data).</li>
+</ol>
+<p><strong>Endpoints:</strong> <code>POST /search/unified</code>, <code>POST /chat/sessions/{id}/messages/stream</code>.</p>
+<hr />
+<h2>5. Mail Organization (Smart Mail Agent)</h2>
+<p>LLM-based inbox triage and reply drafting. (<code>services/mail_service.py</code>, <code>router/mail.py</code>)</p>
+<ul>
+<li><code>POST /mail/classify</code> — fetches recent inbox emails via Graph, classifies each into <strong>important / spam / closed / pending_action</strong> using OpenAI; results saved to <code>email_classifications</code> with confidence + reasoning.</li>
+<li><code>GET /mail/classifications</code> — returns stored classifications; <code>POST /mail/bulk-dismiss</code> soft-deletes spam.</li>
+<li><code>POST /mail/reply/generate</code> — generates AI reply drafts for selected emails.</li>
+<li><code>POST /mail/reply/draft</code> — saves the reviewed reply back into Outlook as a draft via Graph.</li>
+</ul>
+<hr />
+<h2>6. Document Generation</h2>
+<p>Template-driven, optionally grounded in M365 data. (<code>services/documents_service.py</code>, <code>router/documents.py</code>)</p>
+<ol>
+<li>Request detected via <code>/document</code> prefix or template keywords; <code>POST /documents/generate</code>.</li>
+<li>LLM extracts the <strong>template type</strong> (<code>estimate / job_summary / report / quotation / customer_email</code>) and variables from the user's description.</li>
+<li>If the request references M365 sources (regex on "sharepoint/onedrive/email/invoice/report…"), relevant context is retrieved via the RAG pipeline first.</li>
+<li><strong>Two paths:</strong> <em>template-based</em> (fill <code>{variable}</code> placeholders from a <code>document_templates</code> row, then LLM-polish) or <em>free-form grounded</em> (generate from retrieved M365 content when no template matches).</li>
+<li>Response returns a draft (body + optional subject, <code>canSaveToOutlook</code> flag). <code>POST /documents/export</code> renders to PDF/DOCX; <code>POST /documents/draft-email</code> saves an email draft.</li>
+</ol>
+<p>Templates are CRUD-managed via <code>GET/POST /documents/templates</code>, <code>PATCH/DELETE /documents/templates/{id}</code>.</p>
+<hr />
+<h2>7. Other Features</h2>
+<ul>
+<li><strong>Workspaces</strong> — department contexts (Sales, Operations…) with versioned <code>workspace_instructions</code> injected into RAG prompts. (<code>GET /workspaces</code>, <code>PUT /workspaces/{id}/instructions</code>)</li>
+<li><strong>Projects</strong> — ChatGPT-style per-user knowledge containers with uploaded files + custom instructions; files are chunked/embedded into Pinecone (<code>source=project</code>) and used for project-scoped retrieval, organized into sectors. (<code>/projects</code> CRUD + <code>/files</code> + <code>/sectors</code>)</li>
+<li><strong>Audit logs</strong> — every sensitive action recorded in <code>audit_logs</code>; admin/owner read via <code>GET /audit/logs</code>.</li>
+</ul>
+<hr />
+<h2>8. AI Service (<code>backend/ai-service</code>)</h2>
+<p>Standalone FastAPI microservice. (<code>ai-service/app/main.py</code>)</p>
+<table>
+<thead>
+<tr>
+<th>Endpoint</th>
+<th>Function</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>POST /embed</code></td>
+<td>Sentence-Transformers <code>all-MiniLM-L6-v2</code>, <strong>384-dim</strong>, normalized</td>
+</tr>
+<tr>
+<td><code>POST /agent/classify</code></td>
+<td>Lightweight regex intent router → <code>mail / documents / workspace / general</code> + suggested sources</td>
+</tr>
+<tr>
+<td><code>POST /rerank</code></td>
+<td>Token-overlap rescoring (<code>base*0.6 + overlap*0.4</code>), returns top-K</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>9. Data Model (PostgreSQL — key tables)</h2>
+<p><code>users</code>, <code>oauth_tokens</code>, <code>sessions</code>, <code>organizations</code>, <code>organization_members</code> (auth) · <code>workspaces</code>, <code>workspace_instructions</code> · <code>chat_sessions</code>, <code>chat_messages</code> (citations + metadata as JSONB) · <code>email_metadata</code>, <code>email_classifications</code> · <code>file_metadata</code> (graph_item_id, source, drive_id, site_id) · <code>document_templates</code> · <code>projects</code>, <code>project_files</code>, <code>project_sectors</code> · <code>sync_cursors</code> (delta-sync state) · <code>ingestion_jobs</code> · <code>audit_logs</code>.</p>
+<p><strong>Note:</strong> Vectors live only in Pinecone; PostgreSQL holds searchable metadata, permissions, and audit. Multi-tenant isolation is per-org (Pinecone namespace + SQL <code>organization_id</code> scoping).</p>
+<hr />
+<h2>10. Configuration &amp; Run</h2>
+<p><strong>Key env vars:</strong> <code>DATABASE_*</code>, <code>JWT_SECRET</code>, <code>AZURE_CLIENT_ID/SECRET/TENANT_ID</code>, <code>TOKEN_ENCRYPTION_KEY</code> (AES-256-GCM), <code>OPENAI_API_KEY</code>, <code>PINECONE_API_KEY</code>, <code>PINECONE_INDEX_NAME</code>, <code>AI_SERVICE_URL</code>, <code>REDIS_URL</code>, <code>WORKER_SERVICE_TOKEN</code>, <code>INGESTION_SYNC_INTERVAL_MS</code>, <code>TAVILY_API_KEY</code> (optional).</p>
+<p><strong>Constants:</strong> embeddings 384-dim · <code>DEFAULT_TOP_K=20</code> · <code>RERANK_TOP_K=5</code> · chunk 512/overlap 64 · <code>LLM_MODEL=gpt-5.4-mini</code>.</p>
+<p><strong>Run:</strong> Docker Compose (<code>backend/docker-compose.yml</code>) brings up api, ai-service, worker, web, redis. Kubernetes manifests + Terraform in <code>infrastructure/</code>. DB schema via migrations in <code>infrastructure/postgres/migrations/</code> (Alembic also present in <code>backend/alembic</code>).</p></body></html>

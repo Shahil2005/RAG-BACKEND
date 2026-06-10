@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: starbot-api
+  labels:
+    app: starbot-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: starbot-api
+  template:
+    metadata:
+      labels:
+        app: starbot-api
+    spec:
+      containers:
+        - name: api
+          image: starbot/api:latest
+          ports:
+            - containerPort: 3001
+          envFrom:
+            - secretRef:
+                name: starbot-secrets
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 3001
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 3001
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: starbot-api
+spec:
+  selector:
+    app: starbot-api
+  ports:
+    - port: 80
+      targetPort: 3001

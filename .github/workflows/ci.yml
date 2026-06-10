@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared packages
+        run: |
+          pnpm --filter @starbot/types build
+          pnpm --filter @starbot/config build
+          pnpm --filter @starbot/utils build
+          pnpm --filter @starbot/prompts build
+
+      - name: Typecheck API
+        run: pnpm --filter @starbot/api typecheck
+
+      - name: Test API
+        run: pnpm --filter @starbot/api test
+
+      - name: Typecheck Web
+        run: pnpm --filter @starbot/web typecheck
