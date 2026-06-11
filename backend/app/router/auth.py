@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
+from jwt import PyJWTError
 
 from app import logger
 from app.core.dependencies import CurrentUserDep, DBSessionDep, extract_session_token
@@ -154,7 +155,13 @@ async def me(request: Request, db: DBSessionDep) -> dict:
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
         )
     cache = getattr(request.app.state, "cache", None)
-    return await AuthService(db, cache).get_me(token)
+    try:
+        return await AuthService(db, cache).get_me(token)
+    except (PyJWTError, ValueError) as err:
+        logger.warning(f"[auth] me.unauthorized reason={err}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid session"
+        ) from err
 
 
 @router.get("/session")

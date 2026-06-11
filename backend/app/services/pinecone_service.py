@@ -97,7 +97,12 @@ class PineconeService:
         if name in ("PineconeNotFoundError", "PineconeBadRequestError"):
             return True
         status = getattr(err, "status", None)
-        return status in (404, 400)
+        if status in (404, 400, "404", "400"):
+            return True
+        err_str = str(err).lower()
+        if "404" in err_str or "400" in err_str or "not found" in err_str or "bad request" in err_str:
+            return True
+        return False
 
     async def upsert(self, organization_id: str, vectors: list[UpsertVector]) -> int:
         if not vectors:

@@ -64,14 +64,18 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: [ "CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:3001/api/v1/health')\" || exit 1" ]
       interval: 10s
-      retries: 6
+      timeout: 5s
+      start_period: 30s
+      retries: 8
     restart: unless-stopped
 
   worker:
-    image: ragoutlook-api:test
+    image: ragoutlook-worker:test
     command: [ "celery", "-A", "app.core.celery:celery_app", "worker", "--beat", "--loglevel=info", "--pool=solo" ]
     build:
       context: .
@@ -99,38 +103,41 @@ services:
       context: ../../RAG-FRONTEND/frontend
       dockerfile: Dockerfile.web
       args:
-        NEXT_PUBLIC_API_URL: http://api:3001
+        NEXT_PUBLIC_API_URL: http://localhost:3001
     ports:
       - "3000:3000"
     environment:
-      NEXT_PUBLIC_API_URL: http://api:3001
+      API_INTERNAL_URL: http://api:3001
+      NEXT_PUBLIC_API_URL: http://localhost:3001
     depends_on:
       api:
         condition: service_healthy
     healthcheck:
-      test: [ "CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/ || exit 1" ]
+      test: [ "CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/ || exit 1" ]
       interval: 10s
       retries: 6
     restart: unless-stopped
 
   migrate:
-    image: ragoutlook-api:test
-    build:
-      context: .
-      dockerfile: Dockerfile.api
-    env_file:
-      - .env
+    image: postgres:15-alpine
     environment:
-      DATABASE_HOST: postgres
-      DATABASE_PORT: 5432
-      DATABASE_USER: postgres
-      DATABASE_PASSWORD: postgres
-      DATABASE_NAME: starbot
+      PGPASSWORD: postgres
     depends_on:
       postgres:
         condition: service_healthy
+    volumes:
+      - ./infrastructure/postgres/migrations:/migrations:ro
     entrypoint: [ "/bin/sh", "-c" ]
-    command: [ "alembic upgrade head || echo 'migrations failed' ; exit 0" ]
+    command:
+      - |
+        if [ "$$(psql -h postgres -U postgres -d starbot -tAc "SELECT to_regclass('public.sessions')")" = "" ]; then
+          for file in /migrations/*.sql; do
+            echo "Applying $$file"
+            psql -h postgres -U postgres -d starbot -v ON_ERROR_STOP=1 -f "$$file"
+          done
+        else
+          echo "Database schema already exists; skipping migrations"
+        fi
     restart: "no"
 
 volumes:

@@ -803,6 +803,35 @@ def _parse_blocks(markdown: str) -> list[_Block]:
 _HEADING_SIZE = {1: 20, 2: 16, 3: 14, 4: 12, 5: 11, 6: 11}
 
 
+def _sanitize_markdown_for_export(markdown: str) -> str:
+    # 1. Strip leading draft/generation header if present (ends with \n\n---\n\n)
+    if "---" in markdown:
+        parts = markdown.split("---", 1)
+        prefix = parts[0].strip()
+        if any(word in prefix for word in ("Draft", "Generated document", "Review", "review")):
+            markdown = parts[1].strip()
+
+    # 2. Strip trailing notes (e.g. \n\n---\n\n*Note: ...*)
+    if "---" in markdown:
+        parts = markdown.rsplit("---", 1)
+        suffix = parts[1].strip()
+        if any(word in suffix for word in ("Note:", "note:", "*Note", "*note")):
+            markdown = parts[0].strip()
+
+    # 3. Strip trailing "Sources" or "Citations" sections
+    lines = markdown.split("\n")
+    clean_lines = []
+    skip = False
+    for line in lines:
+        if re.match(r"^#{1,6}\s+(Sources|Citations|References|Citations / Sources)\b", line.strip(), re.IGNORECASE):
+            skip = True
+        if not skip:
+            clean_lines.append(line)
+    markdown = "\n".join(clean_lines).strip()
+
+    return markdown
+
+
 class DocumentExportService:
     """Render generated document markdown into downloadable .pdf / .docx bytes.
 
@@ -840,6 +869,7 @@ class DocumentExportService:
 
     async def export(self, markdown: str, format: str) -> bytes:
         """Render straight from the markdown parser (deterministic fallback)."""
+        markdown = _sanitize_markdown_for_export(markdown)
         blocks = _parse_blocks(markdown)
         return self._render_docx(blocks) if format == "docx" else self._render_pdf(blocks)
 
@@ -850,6 +880,7 @@ class DocumentExportService:
         failure (no key, malformed JSON, empty layout) we fall back to the plain
         markdown parser so the download always succeeds.
         """
+        markdown = _sanitize_markdown_for_export(markdown)
         try:
             layout = await self._structure(markdown)
             blocks = _blocks_from_layout(layout)

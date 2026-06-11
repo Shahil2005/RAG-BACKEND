@@ -133,12 +133,15 @@ class ChatService:
 
         ws_id = await self._resolve_workspace_id(ctx, session_id, workspace_id)
         proj_id = await self._resolve_project_id(ctx, session_id, None)
+        messages = await self.get_messages(ctx, session_id)
+        history = messages[:-1] if len(messages) > 1 else []
         response = await self._run_query(
             ctx,
             content,
             workspace_id=ws_id,
             project_id=proj_id,
             sector_id=sector_id if proj_id else None,
+            chat_history=history,
         )
 
         citations = response.get("citations", []) or []
@@ -166,12 +169,15 @@ class ChatService:
 
         ws_id = await self._resolve_workspace_id(ctx, session_id, workspace_id)
         proj_id = await self._resolve_project_id(ctx, session_id, None)
+        messages = await self.get_messages(ctx, session_id)
+        history = messages[:-1] if len(messages) > 1 else []
         response = await self._run_query(
             ctx,
             content,
             workspace_id=ws_id,
             project_id=proj_id,
             sector_id=sector_id if proj_id else None,
+            chat_history=history,
         )
 
         answer = response.get("answer", "") or ""
@@ -325,6 +331,7 @@ class ChatService:
         workspace_id: str | None,
         project_id: str | None,
         sector_id: str | None,
+        chat_history: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Delegate to the query orchestration module to produce the assistant answer."""
         try:
@@ -356,6 +363,7 @@ class ChatService:
                 workspace_id=workspace_id,
                 project_id=project_id,
                 sector_id=sector_id,
+                chat_history=chat_history,
             ),
         )
         if hasattr(response, "model_dump"):

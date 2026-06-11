@@ -18,6 +18,7 @@ TODO(migration) guard in ``_graph``).
 
 from __future__ import annotations
 
+from datetime import datetime
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -35,6 +36,17 @@ from app.schema.mail import GeneratedReply
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
     from app.services.ai_client import AiClientService
+
+
+def _parse_dt(value: Any) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 # Local prompt (was a module constant inside mail-agent.service.ts).
@@ -99,6 +111,7 @@ class MailAgentService:
         reasoning: str | None,
     ) -> str | None:
         """Upsert an email's metadata + classification, returning the metadata id."""
+        received_at_parsed = _parse_dt(email.received_at)
         meta_stmt = (
             pg_insert(EmailMetadata)
             .values(
@@ -107,7 +120,7 @@ class MailAgentService:
                 graph_message_id=email.id,
                 subject=email.subject,
                 sender=email.sender,
-                received_at=email.received_at,
+                received_at=received_at_parsed,
             )
             .on_conflict_do_update(
                 index_elements=[
@@ -118,7 +131,7 @@ class MailAgentService:
                 set_={
                     "subject": email.subject,
                     "sender": email.sender,
-                    "received_at": email.received_at,
+                    "received_at": received_at_parsed,
                 },
             )
             .returning(EmailMetadata.id)

@@ -40,6 +40,7 @@ class RagQueryOptions:
     bypass_topic_guard: bool = False
     # Restrict retrieval to this project's uploaded files only.
     project_only: bool = False
+    chat_history: list[dict] | None = None
 
 
 class LiveContextBlock(BaseModel):

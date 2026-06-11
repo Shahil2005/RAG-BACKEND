@@ -936,19 +936,25 @@ class RagService:
                 ctx, query, project_only, document_recency, mail_recency
             )
 
+        messages = [{"role": "system", "content": RAG_SYSTEM_PROMPT}]
+        if options.chat_history:
+            for msg in options.chat_history:
+                messages.append({
+                    "role": msg["role"],
+                    "content": msg["content"]
+                })
+        messages.append({
+            "role": "user",
+            "content": build_rag_user_prompt(
+                query,
+                context_blocks,
+                workspace_instructions,
+                project_instructions,
+            ),
+        })
+
         answer = await self.ai.chat(
-            messages=[
-                {"role": "system", "content": RAG_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": build_rag_user_prompt(
-                        query,
-                        context_blocks,
-                        workspace_instructions,
-                        project_instructions,
-                    ),
-                },
-            ],
+            messages=messages,
             model=LLM_MODEL,
             temperature=0.2,
         )

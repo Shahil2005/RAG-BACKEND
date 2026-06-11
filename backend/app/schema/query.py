@@ -34,6 +34,9 @@ class OrchestratedQueryOptions(BaseModel):
     force_external: bool | None = Field(
         default=None, serialization_alias="forceExternal"
     )
+    chat_history: list[dict] | None = Field(
+        default=None, serialization_alias="chatHistory"
+    )
 
 
 class DocumentRequest(DictAccessModel):

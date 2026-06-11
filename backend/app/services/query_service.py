@@ -257,7 +257,7 @@ def parse_document_request(query: str) -> DocumentRequest | None:
     return None
 
 
-def classify_query_intent(query: str) -> QueryIntent:
+def classify_query_intent(query: str, chat_history: list[dict] | None = None) -> QueryIntent:
     normalized = query.strip()
     if not normalized:
         return QueryIntent.off_topic
@@ -276,6 +276,9 @@ def classify_query_intent(query: str) -> QueryIntent:
     if business:
         return QueryIntent.business_research
     if m365:
+        return QueryIntent.m365_only
+
+    if chat_history and len(chat_history) > 0:
         return QueryIntent.m365_only
 
     return QueryIntent.off_topic
@@ -400,6 +403,7 @@ class QueryOrchestrationService:
                     "topK": options.top_k,
                     "bypassTopicGuard": True,
                     "projectOnly": True,
+                    "chatHistory": options.chat_history,
                 },
             )
             return result.model_copy(
@@ -412,7 +416,7 @@ class QueryOrchestrationService:
         intent: QueryIntent = (
             QueryIntent.business_research
             if options.force_external
-            else classify_query_intent(query)
+            else classify_query_intent(query, options.chat_history)
         )
 
         if intent == QueryIntent.off_topic:
@@ -443,6 +447,7 @@ class QueryOrchestrationService:
                     "sources": options.sources,
                     "topK": options.top_k,
                     "bypassTopicGuard": True,
+                    "chatHistory": options.chat_history,
                 },
             )
             return result.model_copy(
@@ -450,7 +455,7 @@ class QueryOrchestrationService:
             )
 
         if intent == QueryIntent.business_research:
-            return await self._run_business_research(ctx, query, intent, None)
+            return await self._run_business_research(ctx, query, intent, None, options.chat_history)
 
         internal = await self._rag().query(
             ctx,
@@ -461,10 +466,11 @@ class QueryOrchestrationService:
                 "sources": options.sources,
                 "topK": options.top_k if options.top_k is not None else 5,
                 "bypassTopicGuard": True,
+                "chatHistory": options.chat_history,
             },
         )
         return await self._run_business_research(
-            ctx, query, QueryIntent.hybrid, internal
+            ctx, query, QueryIntent.hybrid, internal, options.chat_history
         )
 
     async def unified_search(
@@ -491,6 +497,7 @@ class QueryOrchestrationService:
         query: str,
         intent: QueryIntent,
         internal: RagQueryResponse | None,
+        chat_history: list[dict] | None = None,
     ) -> RagQueryResponse:
         tavily = self._tavily()
         external_chunks: list[ExternalResearchChunk] = await tavily.search_business_web(
@@ -558,16 +565,22 @@ class QueryOrchestrationService:
             for e in external_chunks
         ]
 
+        messages = [{"role": "system", "content": BUSINESS_RESEARCH_SYSTEM_PROMPT}]
+        if chat_history:
+            for msg in chat_history:
+                messages.append({
+                    "role": msg["role"],
+                    "content": msg["content"]
+                })
+        messages.append({
+            "role": "user",
+            "content": build_hybrid_synthesis_user_prompt(
+                query, internal_blocks, external_blocks
+            ),
+        })
+
         answer = await self._ai().chat(
-            messages=[
-                {"role": "system", "content": BUSINESS_RESEARCH_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": build_hybrid_synthesis_user_prompt(
-                        query, internal_blocks, external_blocks
-                    ),
-                },
-            ],
+            messages=messages,
             model=LLM_MODEL,
             temperature=0.2,
         )
